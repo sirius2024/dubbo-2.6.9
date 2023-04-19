@@ -1,0 +1,2 @@
+a1 = com.sirius.dubbo.spi.impl.A1Service
+a2 = com.sirius.dubbo.spi.impl.A2Service

@@ -52,7 +52,8 @@ public class ExtensionLoader<T> {
 
     private static final String SERVICES_DIRECTORY = "META-INF/services/";
 
-    private static final String DUBBO_DIRECTORY = "META-INF/dubbo/";
+    private static final String DUBBO_DIRECTORY = "" +
+            "/dubbo/";
 
     private static final String DUBBO_INTERNAL_DIRECTORY = DUBBO_DIRECTORY + "internal/";
 
@@ -87,7 +88,10 @@ public class ExtensionLoader<T> {
     private Map<String, IllegalStateException> exceptions = new ConcurrentHashMap<String, IllegalStateException>();
 
     private ExtensionLoader(Class<?> type) {
+        //扩展接口
         this.type = type;
+        // 如果不判断type!=ExtensionFactory，这里将是死循环
+        // 获取ExtensionFactory的自适应拓展实现对象
         objectFactory = (type == ExtensionFactory.class ? null : ExtensionLoader.getExtensionLoader(ExtensionFactory.class).getAdaptiveExtension());
     }
 
@@ -102,11 +106,13 @@ public class ExtensionLoader<T> {
         if (!type.isInterface()) { //校验类型是否为接口
             throw new IllegalArgumentException("Extension type(" + type + ") is not interface!");
         }
+
         //如果接口上没有@SPI注解，则报错 校验是否包含SPI注解
         if (!withExtensionAnnotation(type)) {
             throw new IllegalArgumentException("Extension type(" + type +
                     ") is not extension, because WITHOUT @" + SPI.class.getSimpleName() + " Annotation!");
         }
+
         //从缓存中获取  缓存获取扩展点，如果不存在则生成对应的扩展点并放入缓存
         ExtensionLoader<T> loader = (ExtensionLoader<T>) EXTENSION_LOADERS.get(type);
         if (loader == null) {
@@ -294,12 +300,15 @@ public class ExtensionLoader<T> {
         if ("true".equals(name)) {
             return getDefaultExtension();
         }
+
         Holder<Object> holder = cachedInstances.get(name);
         if (holder == null) {
             cachedInstances.putIfAbsent(name, new Holder<Object>());
             holder = cachedInstances.get(name);
         }
+
         Object instance = holder.get();
+        //双重检查锁
         if (instance == null) {
             synchronized (holder) {
                 instance = holder.get();
@@ -433,6 +442,7 @@ public class ExtensionLoader<T> {
 
     @SuppressWarnings("unchecked")
     public T getAdaptiveExtension() {
+        // 从缓存中获取自适应拓展类实现
         Object instance = cachedAdaptiveInstance.get();
         if (instance == null) {
             if (createAdaptiveInstanceError == null) {
@@ -440,16 +450,19 @@ public class ExtensionLoader<T> {
                     instance = cachedAdaptiveInstance.get();
                     if (instance == null) {
                         try {
-                            //创建接口实例的核心方法
+                            // 创建自适应拓展
                             instance = createAdaptiveExtension();
+                            // 设置自适应拓展到缓存中
                             cachedAdaptiveInstance.set(instance);
                         } catch (Throwable t) {
+                            // 保存创建自适应拓展实现失败原因
                             createAdaptiveInstanceError = t;
                             throw new IllegalStateException("fail to create adaptive instance: " + t.toString(), t);
                         }
                     }
                 }
             } else {
+                // 如果曾经创建自适应拓展失败，直接返回错误
                 throw new IllegalStateException("fail to create adaptive instance: " + createAdaptiveInstanceError.toString(), createAdaptiveInstanceError);
             }
         }
@@ -483,6 +496,9 @@ public class ExtensionLoader<T> {
     }
 
     @SuppressWarnings("unchecked")
+    /**
+     * name: key
+     */
     private T createExtension(String name) {
         //根据配置的名称找到相应的类
         Class<?> clazz = getExtensionClasses().get(name);
@@ -533,6 +549,7 @@ public class ExtensionLoader<T> {
                             //获取需要依赖注入的值
                             Object object = objectFactory.getExtension(pt, property);
                             if (object != null) {
+                                //反射注入进去
                                 method.invoke(instance, object);
                             }
                         } catch (Exception e) {
@@ -755,29 +772,41 @@ public class ExtensionLoader<T> {
     //创建自适应扩展类
     @SuppressWarnings("unchecked")
     private T createAdaptiveExtension() {
-        try {//首先是获取自适应扩展点的Class对象，然后通过反射获取实例，将对象创建的权利交付给框架，这就是控制反转 后，对该实例进行依赖注入，这也是ExtensionLoader的一个特性
+        try {
+            //调用 getAdaptiveExtensionClass 方法获取自适应拓展 Class 对象 通过反射进行实例化
+            //首先是获取自适应扩展点的Class对象，然后通过反射获取实例，将对象创建的权利交付给框架，这就是控制反转 后，对该实例进行依赖注入，这也是ExtensionLoader的一个特性
+            //调用 injectExtension 方法向拓展实例中注入依赖
             return injectExtension((T) getAdaptiveExtensionClass().newInstance());
         } catch (Exception e) {
             throw new IllegalStateException("Can not create adaptive extension " + type + ", cause: " + e.getMessage(), e);
         }
     }
+
+
     //获取自适应扩展点
     private Class<?> getAdaptiveExtensionClass() {
-        //核心方法  会同步加载该扩展点的所有扩展实现类
+        //通过spi加载所有的拓展类
         getExtensionClasses();
-        //如果有@Adaptive注解的类，则返回该类
+
+        //检查缓存，若缓存不为空，则返回缓存
         if (cachedAdaptiveClass != null) {
             return cachedAdaptiveClass;
         }
-        //动态拼凑类，动态编译生成  创建自适应的代理类
+
+        //若缓存为空，则调用 createAdaptiveExtensionClass 创建自适应拓展类
+        //动态拼凑类，动态编译生成  创建自适应的代理类  创建自适应拓展类
         return cachedAdaptiveClass = createAdaptiveExtensionClass();
     }
 
     private Class<?> createAdaptiveExtensionClass() {
-        //字符串拼凑出一个类的字符串
+        //字符串拼凑出一个类的字符串 构建自适应拓展代码
         String code = createAdaptiveExtensionClassCode();
+        // 编译代码，并返回该类
         ClassLoader classLoader = findClassLoader();
+        // 获取编译器实现类，Compiler的默认实现为javassist
+        // 默认使用javassist编译代码生成类
         com.alibaba.dubbo.common.compiler.Compiler compiler = ExtensionLoader.getExtensionLoader(com.alibaba.dubbo.common.compiler.Compiler.class).getAdaptiveExtension();
+        // 编译代码，生成 Class
         return compiler.compile(code, classLoader);
     }
 
@@ -792,7 +821,8 @@ public class ExtensionLoader<T> {
                 break;
             }
         }
-        //如果没有则报错
+
+        //必须至少一个方法有@Adaptive注解
         // no need to generate adaptive class since there's no adaptive method found.
         if (!hasAdaptiveAnnotation)
             throw new IllegalStateException("No adaptive method on extension " + type.getName() + ", refuse to create the adaptive class!");
@@ -802,6 +832,7 @@ public class ExtensionLoader<T> {
         codeBuilder.append("\npublic class ").append(type.getSimpleName()).append("$Adaptive").append(" implements ").append(type.getCanonicalName()).append(" {");
 
         for (Method method : methods) {
+            // 实现type的每个方法
             Class<?> rt = method.getReturnType();
             Class<?>[] pts = method.getParameterTypes();
             Class<?>[] ets = method.getExceptionTypes();
