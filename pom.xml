@@ -142,7 +142,6 @@
         <module>bom</module>
         <module>all</module>
         <module>distribution</module>
-        <module>dubbo-demo/untitled</module>
     </modules>
 
     <dependencyManagement>
